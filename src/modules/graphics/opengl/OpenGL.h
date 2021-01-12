@@ -165,7 +165,7 @@ public:
 		 * initial full-size one (determined after some investigation with an
 		 * affected user on Discord.)
 		 * https://bitbucket.org/rude/love/issues/1436/bug-with-lovegraphicsprint-on-older-ati
-		 *
+		 * https://github.com/love2d/love/issues/1563
 		 **/
 		bool texStorageBreaksSubImage;
 
@@ -176,6 +176,13 @@ public:
 		 * It's possible more Adreno GPUs / drivers are affected as well.
 		 **/
 		bool brokenR8PixelFormat;
+
+		/**
+		 * Intel HD Graphics drivers on Windows prior to the HD 2500/4000 have
+		 * completely broken sRGB support.
+		 * https://github.com/love2d/love/issues/1592
+		 **/
+		bool brokenSRGB;
 
 		/**
 		 * Other bugs which have workarounds that don't use conditional code at
