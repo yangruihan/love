@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2020 LOVE Development Team
+ * Copyright (c) 2006-2021 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -183,6 +183,13 @@ public:
 		 * https://github.com/love2d/love/issues/1592
 		 **/
 		bool brokenSRGB;
+
+		/**
+		 * Some Android graphics drivers claim to support GLES3.0 but have bugs
+		 * with certain aspects that users expect to work. For example:
+		 * https://github.com/love2d/love-android/issues/204
+		 **/
+		bool brokenGLES3;
 
 		/**
 		 * Other bugs which have workarounds that don't use conditional code at

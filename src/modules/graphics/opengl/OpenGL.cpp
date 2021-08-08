@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2020 LOVE Development Team
+ * Copyright (c) 2006-2021 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -124,6 +124,20 @@ bool OpenGL::initContext()
 	if (!gladLoadGLLoader(LOVEGetProcAddress))
 		return false;
 
+	initVendor();
+
+	bugs = {};
+
+	if (GLAD_ES_VERSION_3_0 && !GLAD_ES_VERSION_3_1)
+	{
+		const char *device = (const char *) glGetString(GL_RENDERER);
+		if (getVendor() == VENDOR_VIVANTE && strstr(device, "Vivante GC7000UL"))
+			bugs.brokenGLES3 = true;
+	}
+
+	if (bugs.brokenGLES3)
+		GLAD_ES_VERSION_3_0 = false;
+
 	if (GLAD_VERSION_3_2)
 	{
 		GLint profileMask = 0;
@@ -134,9 +148,6 @@ bool OpenGL::initContext()
 		coreProfile = false;
 
 	initOpenGLFunctions();
-	initVendor();
-
-	bugs = {};
 
 #if defined(LOVE_WINDOWS) || defined(LOVE_LINUX)
 	// See the comments in OpenGL.h.
