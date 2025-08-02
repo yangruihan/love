@@ -3,7 +3,7 @@ R"luastring"--(
 -- There is a matching delimiter at the bottom of the file.
 
 --[[
-Copyright (c) 2006-2020 LOVE Development Team
+Copyright (c) 2006-2024 LOVE Development Team
 
 This software is provided 'as-is', without any express or implied
 warranty.  In no event will the authors be held liable for any damages
@@ -34,7 +34,7 @@ end
 local status, ffi = pcall(require, "ffi")
 if not status then return end
 
-local tonumber, assert, error = tonumber, assert, error
+local tonumber, assert, error, type = tonumber, assert, error, type
 local floor = math.floor
 
 local float = ffi.typeof("float")

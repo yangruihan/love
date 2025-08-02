@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2022 LOVE Development Team
+ * Copyright (c) 2006-2025 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -49,26 +49,26 @@ void Polyline::render(const Vector2 *coords, size_t count, size_t size_hint, flo
 
 	// compute sleeve
 	bool is_looping = (coords[0] == coords[count - 1]);
-	Vector2 s;
+	Vector2 segment;
 	if (!is_looping) // virtual starting point at second point mirrored on first point
-		s = coords[1] - coords[0];
+		segment = coords[1] - coords[0];
 	else // virtual starting point at last vertex
-		s = coords[0] - coords[count - 2];
+		segment = coords[0] - coords[count - 2];
 
-	float len_s = s.getLength();
-	Vector2 ns = s.getNormal(halfwidth / len_s);
+	float segmentLength = segment.getLength();
+	Vector2 segmentNormal = segment.getNormal(halfwidth / segmentLength);
 
-	Vector2 q, r(coords[0]);
+	Vector2 pointA, pointB(coords[0]);
 	for (size_t i = 0; i + 1 < count; i++)
 	{
-		q = r;
-		r = coords[i + 1];
-		renderEdge(anchors, normals, s, len_s, ns, q, r, halfwidth);
+		pointA = pointB;
+		pointB = coords[i + 1];
+		renderEdge(anchors, normals, segment, segmentLength, segmentNormal, pointA, pointB, halfwidth);
 	}
 
-	q = r;
-	r = is_looping ? coords[1] : r + s;
-	renderEdge(anchors, normals, s, len_s, ns, q, r, halfwidth);
+	pointA = pointB;
+	pointB = is_looping ? coords[1] : pointB + segment;
+	renderEdge(anchors, normals, segment, segmentLength, segmentNormal, pointA, pointB, halfwidth);
 
 	vertex_count = normals.size();
 
@@ -82,7 +82,7 @@ void Polyline::render(const Vector2 *coords, size_t count, size_t size_hint, flo
 		// extra degenerate triangle in between the core line and the overdraw
 		// line in order to break up the strip into two. This will let us draw
 		// everything in one draw call.
-		if (triangle_mode == vertex::TriangleIndexMode::STRIP)
+		if (triangle_mode == TRIANGLEINDEX_STRIP)
 			extra_vertices = 2;
 	}
 
@@ -100,7 +100,7 @@ void Polyline::render(const Vector2 *coords, size_t count, size_t size_hint, flo
 	}
 
 	// Add the degenerate triangle strip.
-	if (extra_vertices)
+	if (extra_vertices && vertex_count > 0)
 	{
 		vertices[vertex_count + 0] = vertices[vertex_count - 1];
 		vertices[vertex_count + 1] = vertices[overdraw_vertex_start];
@@ -108,8 +108,8 @@ void Polyline::render(const Vector2 *coords, size_t count, size_t size_hint, flo
 }
 
 void NoneJoinPolyline::renderEdge(std::vector<Vector2> &anchors, std::vector<Vector2> &normals,
-                                Vector2 &s, float &len_s, Vector2 &ns,
-                                const Vector2 &q, const Vector2 &r, float hw)
+                                Vector2 &segment, float &segmentLength, Vector2 &segmentNormal,
+                                const Vector2 &pointA, const Vector2 &pointB, float halfWidth)
 {
 	//   ns1------ns2
 	//    |        |
@@ -117,19 +117,19 @@ void NoneJoinPolyline::renderEdge(std::vector<Vector2> &anchors, std::vector<Vec
 	//    |        |
 	// (-ns1)----(-ns2)
 
-	anchors.push_back(q);
-	anchors.push_back(q);
-	normals.push_back(ns);
-	normals.push_back(-ns);
+	anchors.push_back(pointA);
+	anchors.push_back(pointA);
+	normals.push_back(segmentNormal);
+	normals.push_back(-segmentNormal);
 
-	s     = (r - q);
-	len_s = s.getLength();
-	ns    = s.getNormal(hw / len_s);
+	segment = (pointB - pointA);
+	segmentLength = segment.getLength();
+	segmentNormal = segment.getNormal(halfWidth / segmentLength);
 
-	anchors.push_back(q);
-	anchors.push_back(q);
-	normals.push_back(ns);
-	normals.push_back(-ns);
+	anchors.push_back(pointA);
+	anchors.push_back(pointA);
+	normals.push_back(segmentNormal);
+	normals.push_back(-segmentNormal);
 }
 
 
@@ -157,7 +157,7 @@ void NoneJoinPolyline::renderEdge(std::vector<Vector2> &anchors, std::vector<Vec
  *    (q + w/2 * ns) + lambda * (q - p) = (q + w/2 * nt) + mu * (r - q)   (u1)
  *    (q - w/2 * ns) + lambda * (q - p) = (q - w/2 * nt) + mu * (r - q)   (u2)
  *
- * with nt,nt being the normals on the segments s = p-q and t = q-r,
+ * with ns,nt being the normals on the segments s = p-q and t = q-r,
  *
  *    ns = perp(s) / |s|
  *    nt = perp(t) / |t|.
@@ -171,35 +171,56 @@ void NoneJoinPolyline::renderEdge(std::vector<Vector2> &anchors, std::vector<Vec
  * the intersection points can be efficiently calculated using Cramer's rule.
  */
 void MiterJoinPolyline::renderEdge(std::vector<Vector2> &anchors, std::vector<Vector2> &normals,
-                                   Vector2 &s, float &len_s, Vector2 &ns,
-                                   const Vector2 &q, const Vector2 &r, float hw)
+                                   Vector2 &segment, float &segmentLength, Vector2 &segmentNormal,
+                                   const Vector2 &pointA, const Vector2 &pointB, float halfwidth)
 {
-	Vector2 t    = (r - q);
-	float len_t = t.getLength();
-	Vector2 nt   = t.getNormal(hw / len_t);
+	Vector2 newSegment = (pointB - pointA);
+	float newSegmentLength = newSegment.getLength();
+	if (newSegmentLength == 0.0f)
+	{
+		// degenerate segment, skip it
+		return;
+	}
 
-	anchors.push_back(q);
-	anchors.push_back(q);
+	Vector2 newSegmentNormal = newSegment.getNormal(halfwidth / newSegmentLength);
 
-	float det = Vector2::cross(s, t);
-	if (fabs(det) / (len_s * len_t) < LINES_PARALLEL_EPS && Vector2::dot(s, t) > 0)
+	anchors.push_back(pointA);
+	anchors.push_back(pointA);
+
+	float det = Vector2::cross(segment, newSegment);
+	if (fabs(det) / (segmentLength * newSegmentLength) < LINES_PARALLEL_EPS)
 	{
 		// lines parallel, compute as u1 = q + ns * w/2, u2 = q - ns * w/2
-		normals.push_back(ns);
-		normals.push_back(-ns);
+		normals.push_back(segmentNormal);
+		normals.push_back(-segmentNormal);
+
+		if (Vector2::dot(segment, newSegment) < 0)
+		{
+			// line reverses direction; because the normal flips, the
+			// triangle strip would twist here, so insert a zero-size
+			// quad to contain the twist
+			//  ____.___.____
+			// |    |\ /|    |
+			// p    q X q    r
+			// |____|/ \|____|
+			anchors.push_back(pointA);
+			anchors.push_back(pointA);
+			normals.push_back(-segmentNormal);
+			normals.push_back(segmentNormal);
+		}
 	}
 	else
 	{
 		// cramers rule
-		float lambda = Vector2::cross((nt - ns), t) / det;
-		Vector2 d = ns + s * lambda;
+		float lambda = Vector2::cross((newSegmentNormal - segmentNormal), newSegment) / det;
+		Vector2 d = segmentNormal + segment * lambda;
 		normals.push_back(d);
 		normals.push_back(-d);
 	}
 
-	s     = t;
-	ns    = nt;
-	len_s = len_t;
+	segment = newSegment;
+	segmentNormal = newSegmentNormal;
+	segmentLength = newSegmentLength;
 }
 
 /** Calculate line boundary points.
@@ -220,52 +241,63 @@ void MiterJoinPolyline::renderEdge(std::vector<Vector2> &anchors, std::vector<Ve
  * uh1 = q + ns * w/2, uh2 = q + nt * w/2
  */
 void BevelJoinPolyline::renderEdge(std::vector<Vector2> &anchors, std::vector<Vector2> &normals,
-                                   Vector2 &s, float &len_s, Vector2 &ns,
-                                   const Vector2 &q, const Vector2 &r, float hw)
+                                   Vector2 &segment, float &segmentLength, Vector2 &segmentNormal,
+                                   const Vector2 &pointA, const Vector2 &pointB, float halfWidth)
 {
-	Vector2 t    = (r - q);
-	float len_t = t.getLength();
+	Vector2 newSegment = (pointB - pointA);
+	float newSegmentLength = newSegment.getLength();
 
-	float det = Vector2::cross(s, t);
-	if (fabs(det) / (len_s * len_t) < LINES_PARALLEL_EPS && Vector2::dot(s, t) > 0)
+	float det = Vector2::cross(segment, newSegment);
+	if (fabs(det) / (segmentLength * newSegmentLength) < LINES_PARALLEL_EPS)
 	{
 		// lines parallel, compute as u1 = q + ns * w/2, u2 = q - ns * w/2
-		Vector2 n = t.getNormal(hw / len_t);
-		anchors.push_back(q);
-		anchors.push_back(q);
-		normals.push_back(n);
-		normals.push_back(-n);
-		s     = t;
-		len_s = len_t;
+		Vector2 newSegmentNormal = newSegment.getNormal(halfWidth / newSegmentLength);
+		anchors.push_back(pointA);
+		anchors.push_back(pointA);
+		normals.push_back(segmentNormal);
+		normals.push_back(-segmentNormal);
+
+		if (Vector2::dot(segment, newSegment) < 0)
+		{
+			// line reverses direction; same as for miter
+			anchors.push_back(pointA);
+			anchors.push_back(pointA);
+			normals.push_back(-segmentNormal);
+			normals.push_back(segmentNormal);
+		}
+
+		segment = newSegment;
+		segmentLength = newSegmentLength;
+		segmentNormal = newSegmentNormal;
 		return; // early out
 	}
 
 	// cramers rule
-	Vector2 nt = t.getNormal(hw / len_t);
-	float lambda = Vector2::cross((nt - ns), t) / det;
-	Vector2 d = ns + s * lambda;
+	Vector2 newSegmentNormal = newSegment.getNormal(halfWidth / newSegmentLength);
+	float lambda = Vector2::cross((newSegmentNormal - segmentNormal), newSegment) / det;
+	Vector2 d = segmentNormal + segment * lambda;
 
-	anchors.push_back(q);
-	anchors.push_back(q);
-	anchors.push_back(q);
-	anchors.push_back(q);
+	anchors.push_back(pointA);
+	anchors.push_back(pointA);
+	anchors.push_back(pointA);
+	anchors.push_back(pointA);
 	if (det > 0) // 'left' turn -> intersection on the top
 	{
 		normals.push_back(d);
-		normals.push_back(-ns);
+		normals.push_back(-segmentNormal);
 		normals.push_back(d);
-		normals.push_back(-nt);
+		normals.push_back(-newSegmentNormal);
 	}
 	else
 	{
-		normals.push_back(ns);
+		normals.push_back(segmentNormal);
 		normals.push_back(-d);
-		normals.push_back(nt);
+		normals.push_back(newSegmentNormal);
 		normals.push_back(-d);
 	}
-	s     = t;
-	len_s = len_t;
-	ns    = nt;
+	segment = newSegment;
+	segmentLength = newSegmentLength;
+	segmentNormal = newSegmentNormal;
 }
 
 void Polyline::calc_overdraw_vertex_count(bool is_looping)
@@ -383,33 +415,39 @@ void Polyline::draw(love::graphics::Graphics *gfx)
 	int maxvertices = LOVE_UINT16_MAX - 3;
 
 	int advance = maxvertices;
-	if (triangle_mode == vertex::TriangleIndexMode::STRIP)
+	if (triangle_mode == TRIANGLEINDEX_STRIP)
 		advance -= 2;
 
 	for (int vertex_start = 0; vertex_start < total_vertex_count; vertex_start += advance)
 	{
 		const Vector2 *verts = vertices + vertex_start;
 
-		Graphics::StreamDrawCommand cmd;
-		cmd.formats[0] = vertex::getSinglePositionFormat(is2D);
-		cmd.formats[1] = vertex::CommonFormat::RGBAub;
+		Graphics::BatchedDrawCommand cmd;
+		cmd.formats[0] = getSinglePositionFormat(is2D);
+		cmd.formats[1] = CommonFormat::STf_RGBAub;
 		cmd.indexMode = triangle_mode;
 		cmd.vertexCount = std::min(maxvertices, total_vertex_count - vertex_start);
 
-		Graphics::StreamVertexData data = gfx->requestStreamDraw(cmd);
+		Graphics::BatchedVertexData data = gfx->requestBatchedDraw(cmd);
 
 		if (is2D)
 			t.transformXY((Vector2 *) data.stream[0], verts, cmd.vertexCount);
 		else
 			t.transformXY0((Vector3 *) data.stream[0], verts, cmd.vertexCount);
 
-		Color32 *colordata = (Color32 *) data.stream[1];
+		STf_RGBAub *attributes = (STf_RGBAub *) data.stream[1];
 
 		int draw_rough_count = std::min(cmd.vertexCount, (int) vertex_count - vertex_start);
 
 		// Constant vertex color up to the overdraw vertices.
+		// Texture coordinates are a constant value, we only have them to keep auto-batching
+		// when drawing filled and line polygons together.
 		for (int i = 0; i < draw_rough_count; i++)
-			colordata[i] = curcolor;
+		{
+			attributes[i].s = 0.0f;
+			attributes[i].t = 0.0f;
+			attributes[i].color = curcolor;
+		}
 
 		if (overdraw)
 		{
@@ -424,30 +462,41 @@ void Polyline::draw(love::graphics::Graphics *gfx)
 
 			if (draw_overdraw_count > 0)
 			{
-				Color32 *colors = colordata + draw_overdraw_begin;
-				fill_color_array(curcolor, colors, draw_overdraw_count);
+				STf_RGBAub *c = attributes + draw_overdraw_begin;
+				fill_color_array(curcolor, c, draw_overdraw_count);
 			}
 		}
 	}
 }
 
-void Polyline::fill_color_array(Color32 constant_color, Color32 *colors, int count)
+void Polyline::fill_color_array(Color32 constant_color, STf_RGBAub *attributes, int count)
 {
+	// Note: assigning each element individually seems to be needed to avoid
+	// performance issues in OpenGL + Windows. VS' compiler is likely doing
+	// something that doesn't play nice with write-combined memory from the
+	// graphics driver, when assigning a whole struct after modifying it, or
+	// when using memcpy.
 	for (int i = 0; i < count; ++i)
 	{
-		Color32 c = constant_color;
-		c.a *= (i+1) % 2; // avoids branching. equiv to if (i%2 == 1) c.a = 0;
-		colors[i] = c;
+		attributes[i].s = 0.0f;
+		attributes[i].t = 0.0f;
+		attributes[i].color.r = constant_color.r;
+		attributes[i].color.g = constant_color.g;
+		attributes[i].color.b = constant_color.b;
+		attributes[i].color.a = constant_color.a * ((i + 1) % 2); // avoids branching. equiv to if (i%2 == 1) c.a = 0;
 	}
 }
 
-void NoneJoinPolyline::fill_color_array(Color32 constant_color, Color32 *colors, int count)
+void NoneJoinPolyline::fill_color_array(Color32 constant_color, STf_RGBAub *attributes, int count)
 {
 	for (int i = 0; i < count; ++i)
 	{
-		Color32 c = constant_color;
-		c.a *= (i & 3) < 2; // if (i % 4 == 2 || i % 4 == 3) c.a = 0
-		colors[i] = c;
+		attributes[i].s = 0.0f;
+		attributes[i].t = 0.0f;
+		attributes[i].color.r = constant_color.r;
+		attributes[i].color.g = constant_color.g;
+		attributes[i].color.b = constant_color.b;
+		attributes[i].color.a = constant_color.a * ((i & 3) < 2); // if (i % 4 == 2 || i % 4 == 3) c.a = 0
 	}
 }
 

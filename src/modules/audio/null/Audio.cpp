@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2022 LOVE Development Team
+ * Copyright (c) 2006-2025 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -28,17 +28,13 @@ namespace null
 {
 
 Audio::Audio()
-	: distanceModel(DISTANCE_NONE)
+	: love::audio::Audio("love.audio.null")
+	, distanceModel(DISTANCE_NONE)
 {
 }
 
 Audio::~Audio()
 {
-}
-
-const char *Audio::getName() const
-{
-	return "love.audio.null";
 }
 
 love::audio::Source *Audio::newSource(love::sound::Decoder *)
@@ -203,11 +199,35 @@ bool Audio::isEFXsupported() const
 	return false;
 }
 
+bool Audio::setOutputSpatialization(bool, const char *)
+{
+	return false;
+}
+
+bool Audio::getOutputSpatialization(const char *&filter) const
+{
+	filter = nullptr;
+	return false;
+}
+
+void Audio::getOutputSpatializationFilters(std::vector<std::string> &) const
+{
+}
+
 void Audio::pauseContext()
 {
 }
 
 void Audio::resumeContext()
+{
+}
+
+std::string Audio::getPlaybackDevice()
+{
+	return "";
+}
+
+void Audio::getPlaybackDevices(std::vector<std::string> &/*list*/)
 {
 }
 

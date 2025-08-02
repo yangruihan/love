@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2022 LOVE Development Team
+ * Copyright (c) 2006-2025 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -50,9 +50,9 @@
 #include <OpenAL-Soft/al.h>
 #endif
 #else
-#include <AL/alc.h>
-#include <AL/al.h>
-#include <AL/alext.h>
+#include <alc.h>
+#include <al.h>
+#include <alext.h>
 #endif
 
 namespace love
@@ -77,9 +77,6 @@ public:
 	 * @return One of AL_FORMAT_*, or AL_NONE if unsupported format.
 	 **/
 	static ALenum getFormat(int bitDepth, int channels);
-
-	// Implements Module.
-	const char *getName() const;
 
 	// Implements Audio.
 	love::audio::Source *newSource(love::sound::Decoder *decoder);
@@ -125,10 +122,21 @@ public:
 	int getMaxSourceEffects() const;
 	bool isEFXsupported() const;
 
+	bool setOutputSpatialization(bool enable, const char *filter = nullptr) override;
+	bool getOutputSpatialization(const char *&filter) const override;
+	void getOutputSpatializationFilters(std::vector<std::string> &list) const override;
+
 	bool getEffectID(const char *name, ALuint &id);
 
+	std::string getPlaybackDevice();
+	void getPlaybackDevices(std::vector<std::string> &list);
+	void setPlaybackDevice(const char *name);
+
 private:
+
+	std::vector<ALint> computeContextAttribs();
 	void initializeEFX();
+
 	// The OpenAL device.
 	ALCdevice *device;
 
@@ -147,7 +155,12 @@ private:
 	std::map<std::string, struct EffectMapStorage> effectmap;
 	std::stack<ALuint> slotlist;
 	int MAX_SCENE_EFFECTS = 64;
-	int MAX_SOURCE_EFFECTS = 64;
+	int MAX_REQUESTED_SOURCE_EFFECTS = 64;
+	int MAX_SOURCE_EFFECTS = 0;
+
+	// Disable HRTF output by default.
+	bool requestEnableHRTF = false;
+	std::string requestedHRTFFilter;
 
 	// The Pool.
 	Pool *pool;
@@ -176,6 +189,18 @@ private:
 
 	DistanceModel distanceModel;
 	//float metersPerUnit = 1.0;
+
+	bool hasHRTFExtension = false;
+
+#ifdef LOVE_ANDROID
+#	ifndef ALC_SOFT_pause_device
+	typedef void (ALC_APIENTRY*LPALCDEVICEPAUSESOFT)(ALCdevice *device);
+	typedef void (ALC_APIENTRY*LPALCDEVICERESUMESOFT)(ALCdevice *device);
+#	endif
+	LPALCDEVICEPAUSESOFT alcDevicePauseSOFT;
+	LPALCDEVICERESUMESOFT alcDeviceResumeSOFT;
+	std::vector<love::audio::Source*> pausedSources;
+#endif
 }; // Audio
 
 #ifdef ALC_EXT_EFX

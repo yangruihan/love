@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2022 LOVE Development Team
+ * Copyright (c) 2006-2025 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -21,9 +21,11 @@
 #include "LuaThread.h"
 #include "event/Event.h"
 #include "common/config.h"
+#include "common/runtime.h"
 
 #ifdef LOVE_BUILD_STANDALONE
 extern "C" int luaopen_love(lua_State * L);
+extern "C" int luaopen_love_jitsetup(lua_State * L);
 #endif // LOVE_BUILD_STANDALONE
 
 namespace love
@@ -36,6 +38,7 @@ love::Type LuaThread::type("Thread", &Threadable::type);
 LuaThread::LuaThread(const std::string &name, love::Data *code)
 	: code(code)
 	, name(name)
+	, haserror(false)
 {
 	threadName = name;
 }
@@ -47,11 +50,19 @@ LuaThread::~LuaThread()
 void LuaThread::threadFunction()
 {
 	error.clear();
+	haserror = false;
 
 	lua_State *L = luaL_newstate();
 	luaL_openlibs(L);
 
 #ifdef LOVE_BUILD_STANDALONE
+	// Call LuaJIT-specific setup again. While it's quite late to call it at
+	// this point, it still needed to turn off JIT compilation (if necessary)
+	// for this thread.
+	luax_preload(L, luaopen_love_jitsetup, "love.jitsetup");
+	luax_require(L, "love.jitsetup");
+	lua_pop(L, 1);
+
 	luax_preload(L, luaopen_love, "love");
 	luax_require(L, "love");
 	lua_pop(L, 1);
@@ -70,29 +81,41 @@ void LuaThread::threadFunction()
 	int tracebackidx = lua_gettop(L);
 
 	if (luaL_loadbuffer(L, (const char *) code->getData(), code->getSize(), name.c_str()) != 0)
+	{
 		error = luax_tostring(L, -1);
+		haserror = true;
+	}
 	else
 	{
 		int pushedargs = (int) args.size();
 
 		for (int i = 0; i < pushedargs; i++)
-			args[i].toLua(L);
+			luax_pushvariant(L, args[i]);
 
 		args.clear();
 
 		if (lua_pcall(L, pushedargs, 0, tracebackidx) != 0)
+		{
 			error = luax_tostring(L, -1);
+			haserror = true;
+		}
 	}
 
 	lua_close(L);
 
-	if (!error.empty())
+	if (haserror)
 		onError();
 }
 
 bool LuaThread::start(const std::vector<Variant> &args)
 {
+	if (isRunning())
+		return false;
+
 	this->args = args;
+	error.clear();
+	haserror = false;
+	
 	return Threadable::start();
 }
 
@@ -103,9 +126,6 @@ const std::string &LuaThread::getError() const
 
 void LuaThread::onError()
 {
-	if (error.empty())
-		return;
-
 	auto eventmodule = Module::getInstance<event::Event>(Module::M_EVENT);
 	if (!eventmodule)
 		return;

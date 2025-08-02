@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2006-2022 LOVE Development Team
+ * Copyright (c) 2006-2025 LOVE Development Team
  *
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -93,18 +93,26 @@ ALenum Audio::getFormat(int bitDepth, int channels)
 	return AL_NONE;
 }
 
+static const char *getDeviceSpecifier(ALCdevice *device)
+{
+#ifndef ALC_ALL_DEVICES_SPECIFIER
+	constexpr ALCenum ALC_ALL_DEVICES_SPECIFIER = 0x1013;
+#endif
+	static ALCenum deviceEnum = alcIsExtensionPresent(nullptr, "ALC_ENUMERATE_ALL_EXT") == ALC_TRUE
+		? ALC_ALL_DEVICES_SPECIFIER
+		: ALC_DEVICE_SPECIFIER;
+
+	return alcGetString(device, deviceEnum);
+}
+
 Audio::Audio()
-	: device(nullptr)
+	: love::audio::Audio("love.audio.openal")
+	, device(nullptr)
 	, context(nullptr)
 	, pool(nullptr)
 	, poolThread(nullptr)
 	, distanceModel(DISTANCE_INVERSE_CLAMPED)
 {
-#if defined(LOVE_LINUX)
-	// Temporarly block signals, as the thread inherits this mask
-	love::thread::disableSignals();
-#endif
-
 	// Before opening new device, check if recording
 	// is requested.
 	if (getRequestRecordingPermission())
@@ -114,29 +122,30 @@ Audio::Audio()
 			requestRecordingPermission();
 	}
 
-	// Passing null for default device.
-	device = alcOpenDevice(nullptr);
-
-	if (device == nullptr)
-		throw love::Exception("Could not open device.");
-
-#ifdef ALC_EXT_EFX
-	ALint attribs[4] = { ALC_MAX_AUXILIARY_SENDS, MAX_SOURCE_EFFECTS, 0, 0 };
-#else
-	ALint *attribs = nullptr;
-#endif
-
-	context = alcCreateContext(device, attribs);
-
-	if (context == nullptr)
-		throw love::Exception("Could not create context.");
-
-	if (!alcMakeContextCurrent(context) || alcGetError(device) != ALC_NO_ERROR)
-		throw love::Exception("Could not make context current.");
-
+	{
 #if defined(LOVE_LINUX)
-	love::thread::reenableSignals();
+		// Temporarly block signals, as the thread inherits this mask
+		love::thread::ScopedDisableSignals disableSignals;
 #endif
+
+		// Passing null for default device.
+		device = alcOpenDevice(nullptr);
+
+		if (device == nullptr)
+			throw love::Exception("Could not open device.");
+
+		hasHRTFExtension = alcIsExtensionPresent(device, "ALC_SOFT_HRTF") == AL_TRUE;
+
+		std::vector<ALint> attribs = computeContextAttribs();
+
+		context = alcCreateContext(device, attribs.data());
+
+		if (context == nullptr)
+			throw love::Exception("Could not create context: %s", alcGetString(device, alcGetError(device)));
+
+		if (!alcMakeContextCurrent(context))
+			throw love::Exception("Could not make context current: %s", alcGetString(device, alcGetError(device)));
+	}
 
 #ifdef ALC_EXT_EFX
 	initializeEFX();
@@ -167,7 +176,7 @@ Audio::Audio()
 
 	try
 	{
-		pool = new Pool();
+		pool = new Pool(device);
 	}
 	catch (love::Exception &)
 	{
@@ -197,7 +206,16 @@ Audio::Audio()
 #ifdef LOVE_IOS
 	love::ios::initAudioSessionInterruptionHandler();
 #endif
-        
+
+#ifdef LOVE_ANDROID
+	bool hasPauseDeviceExt = alcIsExtensionPresent(device, "ALC_SOFT_pause_device") == ALC_TRUE;
+	alcDevicePauseSOFT = hasPauseDeviceExt
+		? (LPALCDEVICEPAUSESOFT) alcGetProcAddress(device, "alcDevicePauseSOFT")
+		: nullptr;
+	alcDeviceResumeSOFT = hasPauseDeviceExt
+		? (LPALCDEVICERESUMESOFT) alcGetProcAddress(device, "alcDeviceResumeSOFT")
+		: nullptr;
+#endif
 }
 
 Audio::~Audio()
@@ -235,9 +253,42 @@ Audio::~Audio()
 	alcCloseDevice(device);
 }
 
-const char *Audio::getName() const
+std::vector<ALint> Audio::computeContextAttribs()
 {
-	return "love.audio.openal";
+	std::vector<ALint> attribs;
+
+#ifdef ALC_EXT_EFX
+	attribs.push_back(ALC_MAX_AUXILIARY_SENDS);
+	attribs.push_back(MAX_REQUESTED_SOURCE_EFFECTS);
+#endif
+
+#ifdef ALC_SOFT_HRTF
+	if (hasHRTFExtension)
+	{
+		attribs.push_back(ALC_HRTF_SOFT);
+		attribs.push_back(requestEnableHRTF ? AL_TRUE : AL_FALSE);
+		if (!requestedHRTFFilter.empty())
+		{
+			std::vector<std::string> filters;
+			getOutputSpatializationFilters(filters);
+
+			for (size_t i = 0; i < filters.size(); i++)
+			{
+				if (filters[i] == requestedHRTFFilter)
+				{
+					attribs.push_back(ALC_HRTF_ID_SOFT);
+					attribs.push_back((int)i);
+					break;
+				}
+			}
+		}
+	}
+#endif
+
+	attribs.push_back(0);
+	attribs.push_back(0);
+
+	return attribs;
 }
 
 love::audio::Source *Audio::newSource(love::sound::Decoder *decoder)
@@ -307,13 +358,90 @@ std::vector<love::audio::Source*> Audio::pause()
 
 void Audio::pauseContext()
 {
+#ifdef LOVE_ANDROID
+	if (alcDevicePauseSOFT)
+		alcDevicePauseSOFT(device);
+	else
+	{
+		// This is extremely rare case since we're using OpenAL-soft
+		// in Android and the ALC_SOFT_pause_device has been supported
+		// since 1.16
+		for (auto &src: pausedSources)
+			src->release();
+		pausedSources = pause();
+		for (auto &src: pausedSources)
+			src->retain();
+	}
+#else
 	alcMakeContextCurrent(nullptr);
+#endif
 }
 
 void Audio::resumeContext()
 {
+#ifdef LOVE_ANDROID
+	if (alcDeviceResumeSOFT)
+		alcDeviceResumeSOFT(device);
+	else
+	{
+		// Again, this is rare case
+		play(pausedSources);
+		for (auto &src: pausedSources)
+			src->release();
+		pausedSources.resize(0);
+	}
+#else
 	if (context && alcGetCurrentContext() != context)
 		alcMakeContextCurrent(context);
+#endif
+}
+
+std::string Audio::getPlaybackDevice()
+{
+	const char *dev = getDeviceSpecifier(device);
+
+	if (dev == nullptr)
+		throw Exception("Failed to get current device: %s", alcGetString(device, alcGetError(device)));
+
+	return dev;
+}
+
+void Audio::getPlaybackDevices(std::vector<std::string> &list)
+{
+	const char *devices = getDeviceSpecifier(nullptr);
+
+	if (devices == nullptr)
+		throw Exception("Failed to enumerate devices: %s", alcGetString(nullptr, alcGetError(nullptr)));
+
+	for (const char *device = devices; *device; device++)
+	{
+		list.emplace_back(device);
+		device += list.back().length();
+	}
+}
+
+void Audio::setPlaybackDevice(const char *name)
+{
+#ifndef ALC_SOFT_reopen_device
+	typedef ALCboolean (ALC_APIENTRY*LPALCREOPENDEVICESOFT)(ALCdevice *device,
+		const ALCchar *deviceName, const ALCint *attribs);
+#endif
+	static LPALCREOPENDEVICESOFT alcReopenDeviceSOFT = alcIsExtensionPresent(device, "ALC_SOFT_reopen_device") == ALC_TRUE
+		? (LPALCREOPENDEVICESOFT) alcGetProcAddress(device, "alcReopenDeviceSOFT")
+		: nullptr;
+
+	if (alcReopenDeviceSOFT == nullptr)
+	{
+		// Default implementation throws exception. To make
+		// error message consistent, call the base class.
+		love::audio::Audio::setPlaybackDevice(name);
+		return;
+	}
+
+	std::vector<ALint> attribs = computeContextAttribs();
+
+	if (alcReopenDeviceSOFT(device, (const ALCchar *) name, attribs.data()) == ALC_FALSE)
+		throw love::Exception("Cannot set output device: %s", alcGetString(device, alcGetError(device)));
 }
 
 void Audio::setVolume(float volume)
@@ -612,6 +740,71 @@ bool Audio::isEFXsupported() const
 	return (alGenEffects != nullptr);
 #else
 	return false;
+#endif
+}
+
+bool Audio::setOutputSpatialization(bool enable, const char *filter)
+{
+	requestEnableHRTF = enable;
+	if (filter != nullptr)
+		requestedHRTFFilter = filter;
+	else
+		requestedHRTFFilter.clear();
+
+#ifdef ALC_SOFT_HRTF
+	if (hasHRTFExtension)
+	{
+		static auto alcResetDeviceSOFT = (LPALCRESETDEVICESOFT)alcGetProcAddress(device, "alcResetDeviceSOFT");
+		if (alcResetDeviceSOFT == nullptr)
+			return false;
+
+		std::vector<ALint> attribs = computeContextAttribs();
+		return alcResetDeviceSOFT(device, attribs.data()) != AL_FALSE;
+	}
+#endif
+
+	return false;
+}
+
+bool Audio::getOutputSpatialization(const char *&filter) const
+{
+#ifdef ALC_SOFT_HRTF
+	if (hasHRTFExtension)
+	{
+		ALCint enabled = 0;
+		alcGetIntegerv(device, ALC_HRTF_SOFT, 1, &enabled);
+		if (enabled != 0)
+			filter = alcGetString(device, ALC_HRTF_SPECIFIER_SOFT);
+		else
+			filter = nullptr;
+		return enabled != 0;
+	}
+#endif
+
+	filter = nullptr;
+	return false;
+}
+
+void Audio::getOutputSpatializationFilters(std::vector<std::string> &list) const
+{
+#ifdef ALC_SOFT_HRTF
+	if (!hasHRTFExtension)
+		return;
+
+	static auto alcGetStringiSOFT = (LPALCGETSTRINGISOFT)alcGetProcAddress(device, "alcGetStringiSOFT");
+	if (alcGetStringiSOFT == nullptr)
+		return;
+
+	ALCint count = 0;
+	alcGetIntegerv(device, ALC_NUM_HRTF_SPECIFIERS_SOFT, 1, &count);
+	for (int i = 0; i < count; i++)
+	{
+		const char *specifier = alcGetStringiSOFT(device, ALC_HRTF_SPECIFIER_SOFT, i);
+		if (specifier != nullptr)
+			list.push_back(specifier);
+	}
+#else
+	LOVE_UNUSED(list);
 #endif
 }
 
